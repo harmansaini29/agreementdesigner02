@@ -1,0 +1,6 @@
+flask
+python-docx
+num2words
+python-telegram-bot
+python-dotenv
+python-dateutil

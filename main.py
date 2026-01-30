@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string, request, jsonify
 from docx import Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -6,11 +6,10 @@ from num2words import num2words
 import base64
 import os
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
-import telegram
+import requests  # Changed from telegram to requests for reliability
 import io
-import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -32,22 +31,43 @@ def format_date_with_suffix(d):
         suffix = ["st", "nd", "rd"][day % 10 - 1]
     return f"{day:02d}{suffix} day of {d.strftime('%B %Y')}"
 
-# --- Telegram Bot Functions ---
-async def send_file_to_telegram(document_stream, filename, caption):
+# --- Telegram Bot Function (Synchronous & Robust) ---
+def send_file_to_telegram(document_stream, filename, caption):
     """
-    Sends a file-like object (the Word doc) to your Telegram chat.
+    Sends a file-like object to Telegram using standard HTTP requests.
+    This avoids asyncio loop conflicts in Flask/Vercel.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials are not set.")
-        return
-    bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    document_stream.seek(0) # Go to the beginning of the in-memory file
-    await bot.send_document(
-        chat_id=TELEGRAM_CHAT_ID,
-        document=document_stream,
-        filename=filename,
-        caption=caption
-    )
+        print("Error: Telegram credentials are missing in Environment Variables.")
+        return False, "Credentials missing"
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    
+    # Reset stream pointer to beginning
+    document_stream.seek(0)
+    
+    try:
+        files = {
+            'document': (filename, document_stream, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        }
+        data = {
+            'chat_id': TELEGRAM_CHAT_ID,
+            'caption': caption
+        }
+        
+        response = requests.post(url, data=data, files=files)
+        response_json = response.json()
+        
+        if response_json.get("ok"):
+            return True, "Sent successfully"
+        else:
+            error_desc = response_json.get("description", "Unknown error")
+            print(f"Telegram API Error: {error_desc}")
+            return False, error_desc
+            
+    except Exception as e:
+        print(f"Network Error sending to Telegram: {str(e)}")
+        return False, str(e)
 
 # --- Word Document Generation Logic ---
 def create_word_agreement(client_data):
@@ -470,7 +490,6 @@ def submit():
         header, encoded = client_data['signature_data_url'].split(",", 1)
         signature_data = base64.b64decode(encoded)
         
-        # Unique filename in /tmp
         signature_filename = f"signature_{uuid.uuid4().hex}.png"
         signature_path = os.path.join('/tmp', signature_filename)
         
@@ -478,25 +497,35 @@ def submit():
             f.write(signature_data)
         client_data['signature_path'] = signature_path
         
-        # --- Generate and Send (SYNCHRONOUSLY) ---
-        # 1. Generate the Word doc
+        # --- Generate Document ---
         document_stream = create_word_agreement(client_data)
         
         full_name = f"{client_data['first_name']} {client_data['last_name']}"
         filename = f"Agreement_{full_name.replace(' ', '_')}.docx"
         caption = f"New agreement submitted by: {client_data['salutation']}. {full_name}\nAadhar: {client_data['aadhar_no']}"
         
-        # 2. Send to Telegram (wait for it to finish)
-        asyncio.run(send_file_to_telegram(document_stream, filename, caption))
+        # --- Send to Telegram (Synchronously) ---
+        success, message = send_file_to_telegram(document_stream, filename, caption)
 
-        # 3. Return Success Page
-        return """
-            <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-                <h1 style="color: #28a745;">Agreement Sent!</h1>
-                <p style="font-size: 1.2em;">The agreement has been generated and sent to the administrator via Telegram.</p>
-                <a href="/">Go Back</a>
-            </div>
-        """
+        if success:
+            return """
+                <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                    <h1 style="color: #28a745;">Agreement Sent!</h1>
+                    <p style="font-size: 1.2em;">The agreement has been generated and sent to the administrator via Telegram.</p>
+                    <a href="/">Go Back</a>
+                </div>
+            """
+        else:
+            # Display the actual error if sending fails
+            return f"""
+                <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                    <h1 style="color: #dc3545;">Submission Failed</h1>
+                    <p style="font-size: 1.2em;">We could not send the document to Telegram.</p>
+                    <p style="background: #eee; padding: 10px; display: inline-block;">Error: {message}</p>
+                    <br><br>
+                    <a href="/">Try Again</a>
+                </div>
+            """, 500
 
     except Exception as e:
         print(f"Error in submit route: {e}")

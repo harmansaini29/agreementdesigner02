@@ -1,6 +1,6 @@
 flask
 python-docx
 num2words
-python-telegram-bot
+requests
 python-dotenv
 python-dateutil

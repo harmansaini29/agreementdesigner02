@@ -8,7 +8,7 @@ import os
 import uuid
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-import requests  # Changed from telegram to requests for reliability
+import requests
 import io
 from dotenv import load_dotenv
 
@@ -35,7 +35,6 @@ def format_date_with_suffix(d):
 def send_file_to_telegram(document_stream, filename, caption):
     """
     Sends a file-like object to Telegram using standard HTTP requests.
-    This avoids asyncio loop conflicts in Flask/Vercel.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Error: Telegram credentials are missing in Environment Variables.")
@@ -120,7 +119,10 @@ def create_word_agreement(client_data):
     end_date_str = format_date_with_suffix(end_date)
     
     full_name = f"{client_data['first_name']} {client_data['last_name']}"
-    full_address = f"{client_data['address']}, {client_data['permanent_pincode']}"
+    
+    # --- Address Formatting (Enhanced) ---
+    # Format: Address Line, District, State - Pincode
+    full_address = f"{client_data['address']}, {client_data['permanent_district']}, {client_data['permanent_state']} - {client_data['permanent_pincode']}"
     
     rent_in_words = f"Rupees {num2words(int(client_data['rent_price']), lang='en_IN').title()} Only"
     deposit_in_words = f"Rupees {num2words(int(client_data['security_deposit']), lang='en_IN').title()} Only"
@@ -191,9 +193,20 @@ def create_word_agreement(client_data):
     office_address = client_data.get('office_address')
     if office_address:
         office_pincode = client_data.get('office_pincode', '')
-        full_office_address = f"{office_address}, {office_pincode}".strip().strip(',')
+        office_district = client_data.get('office_district', '')
+        office_state = client_data.get('office_state', '')
+        
+        # Build Office Address formatted string
+        full_office_parts = [office_address]
+        if office_district: full_office_parts.append(office_district)
+        if office_state: full_office_parts.append(office_state)
+        
+        full_office_str = ", ".join(full_office_parts)
+        if office_pincode:
+            full_office_str += f" - {office_pincode}"
+            
         add_run_to_details("Office Address: ")
-        add_run_to_details(full_office_address, bold=True)
+        add_run_to_details(full_office_str, bold=True)
         add_run_to_details("\n")
         
     email_id = client_data.get('email_id')
@@ -266,8 +279,8 @@ def create_word_agreement(client_data):
     
     add_paragraph_with_runs([
         (f'SIGNED AND DELIVERED for\nThe paying Guest by withinnamed\n', False), 
-        (f'{client_data["salutation"]}. ', True),                               
-        (full_name, True)                                                     
+        (f'{client_data["salutation"]}. ', True),                              
+        (full_name, True)                                                      
         ], alignment=WD_ALIGN_PARAGRAPH.LEFT, font_size=14)
     
     sig_paragraph = doc.add_paragraph()
@@ -283,6 +296,7 @@ def create_word_agreement(client_data):
     return document_stream
 
 # --- HTML Template ---
+# Added Indian States List script to populate dropdowns
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -330,26 +344,58 @@ HTML_TEMPLATE = """
                         <label for="age" class="block text-sm font-medium text-gray-700">Age</label>
                         <input type="number" id="age" name="age" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+                    
                     <div>
                         <label for="address" class="block text-sm font-medium text-gray-700">Permanent Address (as per Aadhar Card)</label>
-                        <input type="text" id="address" name="address" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        <input type="text" id="address" name="address" placeholder="House/Flat No, Building, Street" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div>
+                            <label for="permanent_district" class="block text-sm font-medium text-gray-700">District</label>
+                            <input type="text" id="permanent_district" name="permanent_district" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        </div>
+                        <div>
+                            <label for="permanent_state" class="block text-sm font-medium text-gray-700">State</label>
+                            <select id="permanent_state" name="permanent_state" required class="state-dropdown mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                                <option value="">Select State</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div>
                         <label for="permanent_pincode" class="block text-sm font-medium text-gray-700">Pincode (Permanent Address)</label>
                         <input type="text" id="permanent_pincode" name="permanent_pincode" required pattern="[0-9]{6}" title="Enter a 6-digit pincode" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+                    
                     <div>
                         <label for="aadhar_no" class="block text-sm font-medium text-gray-700">Aadhar Card Number</label>
                         <input type="text" id="aadhar_no" name="aadhar_no" required pattern="[0-9]{12}" title="Enter a 12-digit Aadhar number" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+
                     <div>
                         <label for="office_address" class="block text-sm font-medium text-gray-700">Office Address</label>
                         <input type="text" id="office_address" name="office_address" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div>
+                            <label for="office_district" class="block text-sm font-medium text-gray-700">District (Office)</label>
+                            <input type="text" id="office_district" name="office_district" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        </div>
+                        <div>
+                            <label for="office_state" class="block text-sm font-medium text-gray-700">State (Office)</label>
+                            <select id="office_state" name="office_state" class="state-dropdown mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                                <option value="">Select State</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div>
                         <label for="office_pincode" class="block text-sm font-medium text-gray-700">Pincode (Office Address)</label>
                         <input type="text" id="office_pincode" name="office_pincode" pattern="[0-9]{6}" title="Enter a 6-digit pincode" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
+
                     <div>
                         <label for="email_id" class="block text-sm font-medium text-gray-700">Email ID</label>
                         <input type="email" id="email_id" name="email_id" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
@@ -424,6 +470,27 @@ HTML_TEMPLATE = """
     
     <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
     <script>
+        // --- Populate State Dropdowns ---
+        const indianStates = [
+            "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat", 
+            "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", 
+            "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", 
+            "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", 
+            "Uttarakhand", "West Bengal", "Andaman and Nicobar Islands", "Chandigarh", 
+            "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Jammu and Kashmir", "Ladakh", 
+            "Lakshadweep", "Puducherry"
+        ];
+
+        document.querySelectorAll('.state-dropdown').forEach(dropdown => {
+            indianStates.forEach(state => {
+                const option = document.createElement('option');
+                option.value = state;
+                option.textContent = state;
+                dropdown.appendChild(option);
+            });
+        });
+
+        // --- Signature Pad Logic ---
         const canvas = document.getElementById('signature-pad');
         const signaturePad = new SignaturePad(canvas, {
             backgroundColor: 'rgb(249, 250, 251)'
@@ -469,10 +536,17 @@ def submit():
             'last_name': request.form['last_name'],
             'age': request.form['age'],
             'address': request.form['address'],
+            # New Fields captured here
+            'permanent_district': request.form['permanent_district'],
+            'permanent_state': request.form['permanent_state'],
             'permanent_pincode': request.form['permanent_pincode'],
             'aadhar_no': request.form['aadhar_no'],
+            
             'office_address': request.form.get('office_address', ''),
+            'office_district': request.form.get('office_district', ''),
+            'office_state': request.form.get('office_state', ''),
             'office_pincode': request.form.get('office_pincode', ''),
+            
             'email_id': request.form.get('email_id', ''),
             'ref1_name': request.form['ref1_name'],
             'ref1_number': request.form['ref1_number'],

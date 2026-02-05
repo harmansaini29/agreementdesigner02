@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request
 from docx import Document
 from docx.shared import Inches, Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -31,18 +31,12 @@ def format_date_with_suffix(d):
         suffix = ["st", "nd", "rd"][day % 10 - 1]
     return f"{day:02d}{suffix} day of {d.strftime('%B %Y')}"
 
-# --- Telegram Bot Function (Synchronous & Robust) ---
+# --- Telegram Bot Function ---
 def send_file_to_telegram(document_stream, filename, caption):
-    """
-    Sends a file-like object to Telegram using standard HTTP requests.
-    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Telegram credentials are missing in Environment Variables.")
         return False, "Credentials missing"
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    
-    # Reset stream pointer to beginning
     document_stream.seek(0)
     
     try:
@@ -60,30 +54,22 @@ def send_file_to_telegram(document_stream, filename, caption):
         if response_json.get("ok"):
             return True, "Sent successfully"
         else:
-            error_desc = response_json.get("description", "Unknown error")
-            print(f"Telegram API Error: {error_desc}")
-            return False, error_desc
+            return False, response_json.get("description", "Unknown error")
             
     except Exception as e:
-        print(f"Network Error sending to Telegram: {str(e)}")
         return False, str(e)
 
 # --- Word Document Generation Logic ---
 def create_word_agreement(client_data):
-    """
-    Generates a .docx agreement based on the new format and returns it as an in-memory byte stream.
-    """
     doc = Document()
 
-    # --- PAGE 1 SETUP (LEGAL Size with Left Margin) ---
+    # --- PAGE 1 SETUP ---
     section_page1 = doc.sections[0]
     section_page1.page_height = Inches(14.0)
     section_page1.page_width = Inches(8.5)
-    
     section_page1.left_margin = Cm(3.0)
     section_page1.right_margin = Cm(1.5)
     
-    # Helper for adding paragraphs with mixed formatting (bold/regular)
     def add_paragraph_with_runs(texts_and_formats, alignment=WD_ALIGN_PARAGRAPH.JUSTIFY, font_size=16):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(6)
@@ -96,7 +82,6 @@ def create_word_agreement(client_data):
             run.bold = is_bold
         return p
 
-    # Helper for simple formatted paragraphs
     def add_formatted_paragraph(text, size=16, bold=False, align=WD_ALIGN_PARAGRAPH.JUSTIFY):
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(0)
@@ -120,16 +105,17 @@ def create_word_agreement(client_data):
     
     full_name = f"{client_data['first_name']} {client_data['last_name']}"
     
-    # --- Address Formatting (Enhanced) ---
-    # Format: Address Line, District, State - Pincode
+    # Format Addresses
     full_address = f"{client_data['address']}, {client_data['permanent_district']}, {client_data['permanent_state']} - {client_data['permanent_pincode']}"
+    
+    # Since all office fields are now mandatory:
+    full_office_address = f"{client_data['office_address']}, {client_data['office_district']}, {client_data['office_state']} - {client_data['office_pincode']}"
     
     rent_in_words = f"Rupees {num2words(int(client_data['rent_price']), lang='en_IN').title()} Only"
     deposit_in_words = f"Rupees {num2words(int(client_data['security_deposit']), lang='en_IN').title()} Only"
 
-    # --- PAGE 1 (Legal Size, Content at Bottom) ---
-    for _ in range(17):
-        doc.add_paragraph()
+    # --- PAGE 1 CONTENT ---
+    for _ in range(17): doc.add_paragraph()
 
     add_formatted_paragraph('PAYING GUEST AGREEMENT', size=20, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
     doc.add_paragraph()
@@ -147,14 +133,13 @@ def create_word_agreement(client_data):
     
     doc.add_page_break()
 
-    # --- SET SUBSEQUENT PAGES TO LEGAL SIZE (with Left Margin) ---
+    # --- PAGE 2 & 3 ---
     legal_section = doc.sections[-1]
     legal_section.page_height = Inches(14.0)
     legal_section.page_width = Inches(8.5)
     legal_section.left_margin = Cm(3.0)
     legal_section.right_margin = Cm(1.5)
 
-    # --- PAGE 2 & 3 (Legal Size, Font Size 14) ---
     add_formatted_paragraph('AND', size=14, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
     
     font_size_main = Pt(14)
@@ -190,30 +175,13 @@ def create_word_agreement(client_data):
     add_run_to_details(client_data['ref2_number'], bold=True)
     add_run_to_details("\n")
     
-    office_address = client_data.get('office_address')
-    if office_address:
-        office_pincode = client_data.get('office_pincode', '')
-        office_district = client_data.get('office_district', '')
-        office_state = client_data.get('office_state', '')
+    add_run_to_details("Office Address: ")
+    add_run_to_details(full_office_address, bold=True)
+    add_run_to_details("\n")
         
-        # Build Office Address formatted string
-        full_office_parts = [office_address]
-        if office_district: full_office_parts.append(office_district)
-        if office_state: full_office_parts.append(office_state)
-        
-        full_office_str = ", ".join(full_office_parts)
-        if office_pincode:
-            full_office_str += f" - {office_pincode}"
-            
-        add_run_to_details("Office Address: ")
-        add_run_to_details(full_office_str, bold=True)
-        add_run_to_details("\n")
-        
-    email_id = client_data.get('email_id')
-    if email_id:
-        add_run_to_details("Email ID: ")
-        add_run_to_details(email_id, bold=True)
-        add_run_to_details("\n")
+    add_run_to_details("Email ID: ")
+    add_run_to_details(client_data['email_id'], bold=True)
+    add_run_to_details("\n")
     
     p_last = doc.add_paragraph()
     p_last.paragraph_format.space_before = Pt(0)
@@ -222,8 +190,7 @@ def create_word_agreement(client_data):
     run = p_last.add_run("“PAYING GUEST” "); run.bold = True; run.font.size = font_size_main
     p_last.add_run("(which expression shall mean and include his heirs, executors, administrators and assigns) of the ").font.size = font_size_main
     run = p_last.add_run("SECOND PART."); run.bold = True; run.font.size = font_size_main
-    for run in p_last.runs:
-        run.font.name = 'Times New Roman'
+    for run in p_last.runs: run.font.name = 'Times New Roman'
 
     add_paragraph_with_runs([("WHEREAS", True), (" the party of the one Part is the Host in respect of premises situate at ", False), (client_data['rented_address'], True), (", hereinafter for the sake of brevity referred to as the “Said Room Premises”.", False)], font_size=14)
     add_paragraph_with_runs([("AND WHEREAS", True), (" the Paying Guests are in need of temporary furnished accommodation and has approached and requested to the owner to permit the said Paying Guest the use of the “Said Room Premises” together with the fixtures, fittings, furniture’s and amenities for residential purposes for a temporary period. AND WHEREAS, the Host has agreed on certain terms and conditions which the parties have mutually agreed themselves as under.", False)], font_size=14)
@@ -249,16 +216,13 @@ def create_word_agreement(client_data):
         p = doc.add_paragraph(style='List Number')
         p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.space_after = Pt(0)
-        # Apply a page break before the 4th point (index 3).
-        if i == 3:
-            p.paragraph_format.page_break_before = True
+        if i == 3: p.paragraph_format.page_break_before = True
         for text, is_bold in clause_parts:
             run = p.add_run(text)
             run.font.name = 'Times New Roman'
             run.font.size = Pt(14)
             run.bold = is_bold
-        if i != 12:
-            doc.add_paragraph()
+        if i != 12: doc.add_paragraph()
 
     signature_page_section = doc.sections[-1]
     signature_page_section.left_margin = Cm(3.0)
@@ -267,28 +231,18 @@ def create_word_agreement(client_data):
     add_formatted_paragraph("IN WITNESS WHEREOF the parties have hereto hereinto set their respective hands on the day and year first hereinabove mentioned.", size=14)
     for _ in range(3): doc.add_paragraph()
 
-    add_paragraph_with_runs([
-        ('SIGNED AND DELIVERED for\nThe Caretaker by withinnamed\n', False),
-        ('Mr. Jasmeet Singh', True)
-    ], alignment=WD_ALIGN_PARAGRAPH.LEFT, font_size=14)
-    
+    add_paragraph_with_runs([('SIGNED AND DELIVERED for\nThe Caretaker by withinnamed\n', False), ('Mr. Jasmeet Singh', True)], alignment=WD_ALIGN_PARAGRAPH.LEFT, font_size=14)
     doc.add_paragraph()
     add_formatted_paragraph('In the presence of ………………….', size=14, align=WD_ALIGN_PARAGRAPH.LEFT)
-    
     for _ in range(5): doc.add_paragraph()
     
-    add_paragraph_with_runs([
-        (f'SIGNED AND DELIVERED for\nThe paying Guest by withinnamed\n', False), 
-        (f'{client_data["salutation"]}. ', True),                              
-        (full_name, True)                                                      
-        ], alignment=WD_ALIGN_PARAGRAPH.LEFT, font_size=14)
+    add_paragraph_with_runs([(f'SIGNED AND DELIVERED for\nThe paying Guest by withinnamed\n', False), (f'{client_data["salutation"]}. ', True), (full_name, True)], alignment=WD_ALIGN_PARAGRAPH.LEFT, font_size=14)
     
     sig_paragraph = doc.add_paragraph()
     sig_run = sig_paragraph.add_run()
     if os.path.exists(client_data['signature_path']):
         sig_run.add_picture(client_data['signature_path'], width=Inches(2.0))
     sig_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
     add_formatted_paragraph('In the presence of ………………….', size=14, align=WD_ALIGN_PARAGRAPH.LEFT)
 
     document_stream = io.BytesIO()
@@ -296,7 +250,7 @@ def create_word_agreement(client_data):
     return document_stream
 
 # --- HTML Template ---
-# Added Indian States List script to populate dropdowns
+# Updated: strict 'required' attributes on ALL fields including Office and Email
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -314,7 +268,7 @@ HTML_TEMPLATE = """
 <body class="bg-gray-100 flex items-center justify-center min-h-screen py-8">
     <div id="form-container" class="w-full max-w-2xl p-8 space-y-6 bg-white rounded-lg shadow-md m-4">
         <h1 class="text-3xl font-bold text-center text-gray-800">Paying Guest Details Form</h1>
-        <p class="text-center text-gray-600">Please fill in your details below to finalize the agreement.</p>
+        <p class="text-center text-gray-600">Please fill in <strong>ALL</strong> details below. No field can be left blank.</p>
         
         <form action="/submit" method="post" id="agreementForm" class="space-y-8">
             
@@ -323,7 +277,7 @@ HTML_TEMPLATE = """
                 <div class="space-y-6 mt-4">
                     
                     <div>
-                        <label for="salutation" class="block text-sm font-medium text-gray-700">Salutation</label>
+                        <label for="salutation" class="block text-sm font-medium text-gray-700">Salutation *</label>
                         <select id="salutation" name="salutation" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                             <option value="Ms">Ms.</option>
                             <option value="Mr">Mr.</option>
@@ -332,31 +286,31 @@ HTML_TEMPLATE = """
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label for="first_name" class="block text-sm font-medium text-gray-700">First Name</label>
+                            <label for="first_name" class="block text-sm font-medium text-gray-700">First Name *</label>
                             <input type="text" id="first_name" name="first_name" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="last_name" class="block text-sm font-medium text-gray-700">Last Name</label>
+                            <label for="last_name" class="block text-sm font-medium text-gray-700">Last Name *</label>
                             <input type="text" id="last_name" name="last_name" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                     </div>
                     <div>
-                        <label for="age" class="block text-sm font-medium text-gray-700">Age</label>
+                        <label for="age" class="block text-sm font-medium text-gray-700">Age *</label>
                         <input type="number" id="age" name="age" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
                     
                     <div>
-                        <label for="address" class="block text-sm font-medium text-gray-700">Permanent Address (as per Aadhar Card)</label>
-                        <input type="text" id="address" name="address" placeholder="House/Flat No, Building, Street" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        <label for="address" class="block text-sm font-medium text-gray-700">Permanent Address (Street/Building) *</label>
+                        <input type="text" id="address" name="address" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                          <div>
-                            <label for="permanent_district" class="block text-sm font-medium text-gray-700">District</label>
+                            <label for="permanent_district" class="block text-sm font-medium text-gray-700">District *</label>
                             <input type="text" id="permanent_district" name="permanent_district" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="permanent_state" class="block text-sm font-medium text-gray-700">State</label>
+                            <label for="permanent_state" class="block text-sm font-medium text-gray-700">State *</label>
                             <select id="permanent_state" name="permanent_state" required class="state-dropdown mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                                 <option value="">Select State</option>
                             </select>
@@ -364,41 +318,41 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div>
-                        <label for="permanent_pincode" class="block text-sm font-medium text-gray-700">Pincode (Permanent Address)</label>
+                        <label for="permanent_pincode" class="block text-sm font-medium text-gray-700">Pincode (Permanent) *</label>
                         <input type="text" id="permanent_pincode" name="permanent_pincode" required pattern="[0-9]{6}" title="Enter a 6-digit pincode" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
                     
                     <div>
-                        <label for="aadhar_no" class="block text-sm font-medium text-gray-700">Aadhar Card Number</label>
+                        <label for="aadhar_no" class="block text-sm font-medium text-gray-700">Aadhar Card Number *</label>
                         <input type="text" id="aadhar_no" name="aadhar_no" required pattern="[0-9]{12}" title="Enter a 12-digit Aadhar number" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
 
                     <div>
-                        <label for="office_address" class="block text-sm font-medium text-gray-700">Office Address</label>
-                        <input type="text" id="office_address" name="office_address" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        <label for="office_address" class="block text-sm font-medium text-gray-700">Office Address (Enter 'N/A' if none) *</label>
+                        <input type="text" id="office_address" name="office_address" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                          <div>
-                            <label for="office_district" class="block text-sm font-medium text-gray-700">District (Office)</label>
-                            <input type="text" id="office_district" name="office_district" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                            <label for="office_district" class="block text-sm font-medium text-gray-700">District (Office) *</label>
+                            <input type="text" id="office_district" name="office_district" required placeholder="or N/A" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="office_state" class="block text-sm font-medium text-gray-700">State (Office)</label>
-                            <select id="office_state" name="office_state" class="state-dropdown mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                            <label for="office_state" class="block text-sm font-medium text-gray-700">State (Office) *</label>
+                            <select id="office_state" name="office_state" required class="state-dropdown mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                                 <option value="">Select State</option>
                             </select>
                         </div>
                     </div>
 
                     <div>
-                        <label for="office_pincode" class="block text-sm font-medium text-gray-700">Pincode (Office Address)</label>
-                        <input type="text" id="office_pincode" name="office_pincode" pattern="[0-9]{6}" title="Enter a 6-digit pincode" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        <label for="office_pincode" class="block text-sm font-medium text-gray-700">Pincode (Office) *</label>
+                        <input type="text" id="office_pincode" name="office_pincode" required pattern="[0-9]{6}" title="Enter 6-digit pincode (or 000000 if N/A)" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
 
                     <div>
-                        <label for="email_id" class="block text-sm font-medium text-gray-700">Email ID</label>
-                        <input type="email" id="email_id" name="email_id" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
+                        <label for="email_id" class="block text-sm font-medium text-gray-700">Email ID *</label>
+                        <input type="email" id="email_id" name="email_id" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
                 </div>
             </div>
@@ -408,21 +362,21 @@ HTML_TEMPLATE = """
                 <div class="space-y-6 mt-4">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label for="ref1_name" class="block text-sm font-medium text-gray-700">Reference 1 Name (e.g., Father/Mother)</label>
+                            <label for="ref1_name" class="block text-sm font-medium text-gray-700">Reference 1 Name *</label>
                             <input type="text" id="ref1_name" name="ref1_name" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="ref1_number" class="block text-sm font-medium text-gray-700">Reference 1 Number</label>
+                            <label for="ref1_number" class="block text-sm font-medium text-gray-700">Reference 1 Number *</label>
                             <input type="tel" id="ref1_number" name="ref1_number" required pattern="[0-9]{10}" title="Enter a 10-digit mobile number" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label for="ref2_name" class="block text-sm font-medium text-gray-700">Reference 2 Name</label>
+                            <label for="ref2_name" class="block text-sm font-medium text-gray-700">Reference 2 Name *</label>
                             <input type="text" id="ref2_name" name="ref2_name" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="ref2_number" class="block text-sm font-medium text-gray-700">Reference 2 Number</label>
+                            <label for="ref2_number" class="block text-sm font-medium text-gray-700">Reference 2 Number *</label>
                             <input type="tel" id="ref2_number" name="ref2_number" required pattern="[0-9]{10}" title="Enter a 10-digit mobile number" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                     </div>
@@ -433,21 +387,21 @@ HTML_TEMPLATE = """
                 <h2 class="section-title">Agreement Terms</h2>
                 <div class="space-y-6 mt-4">
                     <div>
-                        <label for="rented_address" class="block text-sm font-medium text-gray-700">Rented Property Address</label>
+                        <label for="rented_address" class="block text-sm font-medium text-gray-700">Rented Property Address *</label>
                         <input type="text" id="rented_address" name="rented_address" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
-                            <label for="rent_price" class="block text-sm font-medium text-gray-700">Monthly Rent (INR)</label>
+                            <label for="rent_price" class="block text-sm font-medium text-gray-700">Monthly Rent (INR) *</label>
                             <input type="number" id="rent_price" name="rent_price" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                         <div>
-                            <label for="security_deposit" class="block text-sm font-medium text-gray-700">Security Deposit (INR)</label>
+                            <label for="security_deposit" class="block text-sm font-medium text-gray-700">Security Deposit (INR) *</label>
                             <input type="number" id="security_deposit" name="security_deposit" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                         </div>
                     </div>
                     <div>
-                        <label for="start_date" class="block text-sm font-medium text-gray-700">Agreement Start Date</label>
+                        <label for="start_date" class="block text-sm font-medium text-gray-700">Agreement Start Date *</label>
                         <input type="date" id="start_date" name="start_date" required class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm">
                     </div>
                 </div>
@@ -463,14 +417,13 @@ HTML_TEMPLATE = """
             </div>
 
             <button type="submit" class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">
-                Submit Details
+                Submit Agreement
             </button>
         </form>
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
     <script>
-        // --- Populate State Dropdowns ---
         const indianStates = [
             "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat", 
             "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", 
@@ -478,7 +431,7 @@ HTML_TEMPLATE = """
             "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", 
             "Uttarakhand", "West Bengal", "Andaman and Nicobar Islands", "Chandigarh", 
             "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Jammu and Kashmir", "Ladakh", 
-            "Lakshadweep", "Puducherry"
+            "Lakshadweep", "Puducherry", "N/A"
         ];
 
         document.querySelectorAll('.state-dropdown').forEach(dropdown => {
@@ -490,11 +443,8 @@ HTML_TEMPLATE = """
             });
         });
 
-        // --- Signature Pad Logic ---
         const canvas = document.getElementById('signature-pad');
-        const signaturePad = new SignaturePad(canvas, {
-            backgroundColor: 'rgb(249, 250, 251)'
-        });
+        const signaturePad = new SignaturePad(canvas, { backgroundColor: 'rgb(249, 250, 251)' });
 
         document.getElementById('clear-signature').addEventListener('click', function () {
             signaturePad.clear();
@@ -513,14 +463,12 @@ HTML_TEMPLATE = """
         const yyyy = today.getFullYear();
         const mm = String(today.getMonth() + 1).padStart(2, '0');
         const dd = String(today.getDate()).padStart(2, '0');
-        const formattedDate = `${yyyy}-${mm}-${dd}`;
-        document.getElementById('start_date').value = formattedDate;
+        document.getElementById('start_date').value = `${yyyy}-${mm}-${dd}`;
     </script>
 </body>
 </html>
 """
 
-# --- Flask Routes ---
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -529,25 +477,45 @@ def index():
 def submit():
     signature_path = None
     try:
-        # Collect all form data
+        # STRICT SERVER-SIDE VALIDATION: Check if any expected field is missing or empty
+        required_fields = [
+            'salutation', 'first_name', 'last_name', 'age', 
+            'address', 'permanent_district', 'permanent_state', 'permanent_pincode',
+            'aadhar_no', 
+            'office_address', 'office_district', 'office_state', 'office_pincode', 
+            'email_id',
+            'ref1_name', 'ref1_number', 'ref2_name', 'ref2_number',
+            'rented_address', 'rent_price', 'security_deposit', 'start_date', 
+            'signature'
+        ]
+
+        # Check every field exists and is not just whitespace
+        for field in required_fields:
+            if not request.form.get(field) or not request.form.get(field).strip():
+                return f"""
+                <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                    <h1 style="color: #dc3545;">Submission Failed</h1>
+                    <p>The field <strong>{field.replace('_', ' ').title()}</strong> cannot be empty.</p>
+                    <a href="/">Go Back</a>
+                </div>
+                """, 400
+
+        # If validation passes, collect data
         client_data = {
             'salutation': request.form['salutation'],
             'first_name': request.form['first_name'],
             'last_name': request.form['last_name'],
             'age': request.form['age'],
             'address': request.form['address'],
-            # New Fields captured here
             'permanent_district': request.form['permanent_district'],
             'permanent_state': request.form['permanent_state'],
             'permanent_pincode': request.form['permanent_pincode'],
             'aadhar_no': request.form['aadhar_no'],
-            
-            'office_address': request.form.get('office_address', ''),
-            'office_district': request.form.get('office_district', ''),
-            'office_state': request.form.get('office_state', ''),
-            'office_pincode': request.form.get('office_pincode', ''),
-            
-            'email_id': request.form.get('email_id', ''),
+            'office_address': request.form['office_address'],
+            'office_district': request.form['office_district'],
+            'office_state': request.form['office_state'],
+            'office_pincode': request.form['office_pincode'],
+            'email_id': request.form['email_id'],
             'ref1_name': request.form['ref1_name'],
             'ref1_number': request.form['ref1_number'],
             'ref2_name': request.form['ref2_name'],
@@ -560,25 +528,21 @@ def submit():
             'signature_data_url': request.form['signature']
         }
 
-        # --- Handle Signature (Use /tmp for Vercel) ---
+        # --- Process Signature ---
         header, encoded = client_data['signature_data_url'].split(",", 1)
         signature_data = base64.b64decode(encoded)
-        
         signature_filename = f"signature_{uuid.uuid4().hex}.png"
         signature_path = os.path.join('/tmp', signature_filename)
-        
         with open(signature_path, "wb") as f:
             f.write(signature_data)
         client_data['signature_path'] = signature_path
         
-        # --- Generate Document ---
+        # --- Generate and Send ---
         document_stream = create_word_agreement(client_data)
-        
         full_name = f"{client_data['first_name']} {client_data['last_name']}"
         filename = f"Agreement_{full_name.replace(' ', '_')}.docx"
         caption = f"New agreement submitted by: {client_data['salutation']}. {full_name}\nAadhar: {client_data['aadhar_no']}"
         
-        # --- Send to Telegram (Synchronously) ---
         success, message = send_file_to_telegram(document_stream, filename, caption)
 
         if success:
@@ -590,11 +554,10 @@ def submit():
                 </div>
             """
         else:
-            # Display the actual error if sending fails
             return f"""
                 <div style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                     <h1 style="color: #dc3545;">Submission Failed</h1>
-                    <p style="font-size: 1.2em;">We could not send the document to Telegram.</p>
+                    <p>We could not send the document to Telegram.</p>
                     <p style="background: #eee; padding: 10px; display: inline-block;">Error: {message}</p>
                     <br><br>
                     <a href="/">Try Again</a>
@@ -605,7 +568,6 @@ def submit():
         print(f"Error in submit route: {e}")
         return f"An error occurred: {e}", 500
     finally:
-        # Cleanup temp file
         if signature_path and os.path.exists(signature_path):
             os.remove(signature_path)
 
